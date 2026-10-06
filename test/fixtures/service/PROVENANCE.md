@@ -3,7 +3,7 @@
 `inventory.json` is copied byte-for-byte from the generated, published service
 contract at:
 
-- Repository: `BitcoinErrorLog/pubky-marketplace-service`
+- Repository: `pubky/pubky-marketplace-service`
 - Revision: `4d5c07c0f273616c4fba06697f90d4baef5a7722`
 - Source path: `contracts/samples/inventory.json`
 - SHA-256: `eced83226ed825ff8158afc63f454669eb3b7bb0a056739dc1c7395282b2e5c1`
