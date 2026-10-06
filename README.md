@@ -80,7 +80,7 @@ service-authoritative variant availability.
 
 The pinned executable contract is
 `test/fixtures/service/inventory.json`, copied byte-for-byte from
-`BitcoinErrorLog/pubky-marketplace-service` revision
+`pubky/pubky-marketplace-service` revision
 `4d5c07c0f273616c4fba06697f90d4baef5a7722`, migration `0034`. See the
 fixture provenance file for source and SHA-256 details.
 
