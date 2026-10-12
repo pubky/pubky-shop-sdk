@@ -1,8 +1,21 @@
 # @bitcoinerrorlog/pubky-shop
 
-Private TypeScript SDK for the Pubky Marketplace inventory HTTP contract,
-deterministic JSON/CSV interchange, and durable import planning. The package is
-ESM-only, requires Node 22 or newer, and is not published by this repository.
+TypeScript SDK for the Pubky Marketplace inventory HTTP contract,
+deterministic JSON/CSV interchange, and durable import planning, plus the
+`pubky-shop` seller CLI and a Shopify bridge. The package is ESM-only and
+requires Node 22 or newer. It is published to npm as
+`@bitcoinerrorlog/pubky-shop` (`latest` is 0.1.6) by the `publish.yml` workflow
+when a GitHub release is published.
+
+```sh
+npm install @bitcoinerrorlog/pubky-shop
+npx pubky-shop --help
+```
+
+The service it talks to is
+[`pubky/pubky-marketplace-service`](https://github.com/pubky/pubky-marketplace-service);
+its HTTP routes are documented in
+[`docs/api.md`](https://github.com/pubky/pubky-marketplace-service/blob/main/docs/api.md).
 
 ## Package exports
 
@@ -33,6 +46,20 @@ const client = new PubkyShopClient({
   session: process.env.PUBKY_MARKETPLACE_SESSION!,
   serviceUrl: "https://marketplace.example/",
 });
+```
+
+`serviceUrl` is the marketplace service origin (production:
+`https://marketplace-service-production-ce23.up.railway.app`). Every method
+returns an `SdkResult<T>`, `{ ok: true, value }` or `{ ok: false, error }`,
+and does not throw for service or transport failures:
+
+```ts
+const result = await client.listings(sellerPubky, { limit: 50 });
+if (!result.ok) {
+  console.error(result.error.code); // for example "session_rejected"
+} else {
+  console.log(result.value);
+}
 ```
 
 The host obtains the opaque service bearer out of band, owns persistence,
@@ -77,6 +104,23 @@ are exposed.
 The projection's `stock.authority` is always `listing_total`. Variant id and
 SKU are catalog lookup assertions only. This package does not claim or expose
 service-authoritative variant availability.
+
+| Method | Service route |
+| --- | --- |
+| `getInventoryProjection(aggregateId)` | `GET /v1/inventory/listings/{aggregateId}` |
+| `adjustInventory(request)` | `POST /v1/inventory/adjust` |
+| `listings(pubky, query?)` | `GET /v1/sellers/{pubky}/listings` |
+| `orders(pubky, query?)` | `GET /v1/sellers/{pubky}/orders` |
+| `events(pubky, query?)` | `GET /v1/sellers/{pubky}/events` |
+| `getListing(seller, listingId)` | `GET /v1/listings/{seller}/{listingId}` |
+| `syncMany(listings)` | `POST /v1/listings/sync-many` (chunks of 100) |
+| `addWebhook(url)` | `POST /v1/webhooks` |
+| `rotateWebhook(id)` | `POST /v1/webhooks/{id}/rotate` |
+| `deleteWebhook(id)` | `DELETE /v1/webhooks/{id}` |
+| `listSessions()` | `GET /v1/auth/sessions` |
+| `createSession(authToken)` | `POST /v1/auth/sessions` |
+| `updateSession(id, patch)` | `PATCH /v1/auth/sessions/{id}` |
+| `revokeSession(id)` | `DELETE /v1/auth/sessions/{id}` |
 
 The pinned executable contract is
 `test/fixtures/service/inventory.json`, copied byte-for-byte from
@@ -248,8 +292,9 @@ version-CAS discard control; it makes the manifest unavailable first, then
 removes its retained quarantine/conflict files. Replay never changes
 `complete`, `conflict`, `failed`, or any other row checkpoint. Quarantine
 reports survive a new `FileManifestStore` instance. Malformed or truncated CSV
-creates no manifest. Wave 2 has no homeserver PUT, fake compare-and-swap,
-service publication, connector, CLI, webhook, payment, or UI surface.
+creates no manifest. The planner itself performs no homeserver PUT, fake
+compare-and-swap, or service publication; the CLI `listings import` command
+and the Shopify bridge drive publication on top of it.
 
 External grouping retains only one fixed fan-in batch. Generated runs use
 deterministic generation/index names rather than an in-memory path catalog.
@@ -325,6 +370,49 @@ pubky-shop auth logout --force-local
 `--json` prints `{ok,data,error{code,message}}`. Exit `0` success, `1` usage,
 `2` auth/denied, `3` remote/rate-limit/unavailable.
 
+## Webhooks
+
+Register an endpoint with `pubky-shop webhook add --url <https-url>` or
+`client.addWebhook(url)`; `rotateWebhook` / `webhook rotate` issues a new
+secret and key id, and `deleteWebhook` / `webhook delete` removes the
+endpoint. The service signs every delivery with these headers:
+
+| Header | Value |
+| --- | --- |
+| `Pubky-Webhook-Version` | `1` |
+| `Pubky-Webhook-Id` | event id (UUID) |
+| `Pubky-Webhook-Timestamp` | Unix seconds |
+| `Pubky-Webhook-Key-Id` | key id (UUID) of the endpoint's current secret |
+| `Pubky-Webhook-Signature` | `v1=` plus lowercase hex HMAC-SHA256 |
+
+The HMAC is computed over `v1.{timestamp}.{event id}.{raw body}` and keyed by
+the SHA-256 of the secret's bytes, where the secret is the unpadded base64url
+string returned when the endpoint is created or rotated. Verify against the
+raw request bytes, not re-serialized JSON. `verifyPubkyWebhook` (Node only,
+exported from the Shopify connector entry) checks the key id, a timestamp
+skew, the signature format and the signature in constant time:
+
+```ts
+import { verifyPubkyWebhook } from "@bitcoinerrorlog/pubky-shop/connectors/shopify";
+
+const verdict = verifyPubkyWebhook({
+  raw: rawBodyBytes, // Uint8Array of the exact request body
+  secretBase64Url: process.env.PUBKY_WEBHOOK_SECRET!,
+  expectedKeyId: process.env.PUBKY_WEBHOOK_KEY_ID!,
+  eventId: headers["pubky-webhook-id"],
+  timestamp: headers["pubky-webhook-timestamp"],
+  keyId: headers["pubky-webhook-key-id"],
+  signature: headers["pubky-webhook-signature"],
+  nowSeconds: Math.floor(Date.now() / 1000),
+  maxSkewSeconds: 300,
+});
+if (!verdict.ok) {
+  // verdict.reason: "malformed" | "stale" | "wrong_key" | "bad_signature"
+}
+```
+
+Deduplicate deliveries on `Pubky-Webhook-Id`.
+
 ## Shopify bridge
 
 `@bitcoinerrorlog/pubky-shop/connectors/shopify` maps current and legacy
@@ -363,10 +451,15 @@ npm run typecheck
 npm test
 npm run test:full
 npm run build
+npm run consumer:check
+npm run browser:check
 npm run pack:dry
 npm run gate
+npm run gate:full
 ```
 
 `npm test` / `npm run gate` keep the 10k-row catalog that still spills to disk.
-`GATE_FULL=1 npm test` (or `npm run test:full`) adds the 100001-row catalog.
+`GATE_FULL=1 npm test` (or `npm run test:full` / `npm run gate:full`) adds the
+100001-row catalog. `consumer:check` and `browser:check` import the built
+package the way a consumer would.
 `npm run pack:dry` validates package contents without publishing.
