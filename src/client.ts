@@ -22,12 +22,38 @@ export interface PubkyShopClientConfig {
 
 export type Int64 = bigint;
 
-export interface StockView extends LosslessJsonObject {
+export interface ListingStockView extends LosslessJsonObject {
   authority: "listing_total";
   total: Int64;
   available: Int64;
   reserved: Int64;
   sold: Int64;
+}
+
+/** Stock of one size on a variant-tracked listing, with the listing sum alongside. */
+export interface VariantStockView extends LosslessJsonObject {
+  authority: "variant";
+  variant_id: string;
+  sku?: string;
+  total: Int64;
+  available: Int64;
+  reserved: Int64;
+  sold: Int64;
+  listing_total: ListingStockView;
+}
+
+export type StockView = ListingStockView | VariantStockView;
+
+/** One row of `variants` on the seller inventory read of a variant-tracked listing. */
+export interface VariantInventory extends LosslessJsonObject {
+  variant_id: string;
+  sku?: string;
+  enabled: boolean;
+  total: Int64;
+  available: Int64;
+  reserved: Int64;
+  sold: Int64;
+  sold_out: boolean;
 }
 
 export interface InventoryProjection extends LosslessJsonObject {
@@ -37,7 +63,8 @@ export interface InventoryProjection extends LosslessJsonObject {
   seller_pubky: string;
   listing_id: string;
   server_revision: Int64;
-  stock: StockView;
+  stock: ListingStockView;
+  variants?: VariantInventory[];
 }
 
 export interface VariantAssertion {
@@ -160,7 +187,21 @@ function object(value: LosslessJsonValue | undefined): value is LosslessJsonObje
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function decodeStock(value: LosslessJsonValue | undefined): StockView {
+function counters(value: LosslessJsonValue | undefined): value is LosslessJsonObject {
+  if (
+    !object(value) ||
+    !int64(value.total, 0n) ||
+    !int64(value.available, 0n) ||
+    !int64(value.reserved, 0n) ||
+    !int64(value.sold, 0n)
+  ) {
+    return false;
+  }
+  const combined = value.available + value.reserved + value.sold;
+  return combined <= I64_MAX && combined === value.total;
+}
+
+function decodeListingStock(value: LosslessJsonValue | undefined): ListingStockView {
   const combined =
     object(value) &&
     typeof value.available === "bigint" &&
@@ -180,7 +221,45 @@ function decodeStock(value: LosslessJsonValue | undefined): StockView {
   ) {
     throw new PubkyShopError("invalid_response");
   }
-  return value as StockView;
+  return value as ListingStockView;
+}
+
+function decodeVariantStock(value: LosslessJsonValue | undefined): VariantStockView {
+  if (
+    !object(value) ||
+    value.authority !== "variant" ||
+    typeof value.variant_id !== "string" ||
+    !ID.test(value.variant_id) ||
+    value.variant_id.length > 128 ||
+    (value.sku !== undefined && typeof value.sku !== "string") ||
+    !counters(value)
+  ) {
+    throw new PubkyShopError("invalid_response");
+  }
+  decodeListingStock(value.listing_total);
+  return value as VariantStockView;
+}
+
+function decodeStock(value: LosslessJsonValue | undefined): StockView {
+  return object(value) && value.authority === "variant"
+    ? decodeVariantStock(value)
+    : decodeListingStock(value);
+}
+
+function decodeVariantInventory(value: LosslessJsonValue | undefined): VariantInventory {
+  if (
+    !object(value) ||
+    typeof value.variant_id !== "string" ||
+    !ID.test(value.variant_id) ||
+    value.variant_id.length > 128 ||
+    (value.sku !== undefined && typeof value.sku !== "string") ||
+    typeof value.enabled !== "boolean" ||
+    typeof value.sold_out !== "boolean" ||
+    !counters(value)
+  ) {
+    throw new PubkyShopError("invalid_response");
+  }
+  return value as VariantInventory;
 }
 
 export function decodeInventoryProjection(value: LosslessJsonValue): InventoryProjection {
@@ -200,7 +279,15 @@ export function decodeInventoryProjection(value: LosslessJsonValue): InventoryPr
   ) {
     throw new PubkyShopError("invalid_response");
   }
-  decodeStock(value.stock);
+  decodeListingStock(value.stock);
+  if (value.variants !== undefined) {
+    if (!Array.isArray(value.variants)) {
+      throw new PubkyShopError("invalid_response");
+    }
+    for (const row of value.variants) {
+      decodeVariantInventory(row);
+    }
+  }
   return value as InventoryProjection;
 }
 
