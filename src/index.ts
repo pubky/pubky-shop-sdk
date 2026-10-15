@@ -8,6 +8,7 @@ export {
   type InventoryAdjustmentEnvelope,
   type InventoryAdjustmentResult,
   type InventoryProjection,
+  type ListingStockView,
   type Int64,
   type PubkyShopClientConfig,
   type SellerEventsQuery,
@@ -17,6 +18,8 @@ export {
   type SyncManyEnvelope,
   type SyncManyListing,
   type VariantAssertion,
+  type VariantInventory,
+  type VariantStockView,
 } from "./client.js";
 export {
   CANONICAL_CSV_COLUMNS,

@@ -101,9 +101,16 @@ serializes them as exact unquoted JSON integer tokens; for example
 server messages are never reflected, and only allowlisted service error codes
 are exposed.
 
-The projection's `stock.authority` is always `listing_total`. Variant id and
-SKU are catalog lookup assertions only. This package does not claim or expose
-service-authoritative variant availability.
+The projection's `stock.authority` is `listing_total`. On a variant-tracked
+listing the projection also carries `variants`, one row per size
+(`variant_id`, optional `sku`, `enabled`, `total`, `available`, `reserved`,
+`sold`, `sold_out`), decoded and validated.
+
+`InventoryAdjustRequest.variant` (`{ id?, sku? }`) selects a size and is
+required by the service on a variant-tracked listing. Its answer carries
+`stock.authority: "variant"` (`VariantStockView`: the size's counters plus the
+listing sum in `listing_total`); a single-variant listing still answers
+`listing_total`. Narrow on `stock.authority` before reading `variant_id`.
 
 | Method | Service route |
 | --- | --- |
