@@ -28,6 +28,13 @@ export interface ListingStockView extends LosslessJsonObject {
   available: Int64;
   reserved: Int64;
   sold: Int64;
+  /**
+   * Present and true when the stock is made to order: the seller's connected
+   * store sells it without a count. `available` is then 0 and is not a count;
+   * the listing never sells out, and `inventory.adjust` answers
+   * `stock_not_tracked`.
+   */
+  made_to_order?: boolean;
 }
 
 /** Stock of one size on a variant-tracked listing, with the listing sum alongside. */
@@ -54,6 +61,8 @@ export interface VariantInventory extends LosslessJsonObject {
   reserved: Int64;
   sold: Int64;
   sold_out: boolean;
+  /** Present and true when this size is made to order (never sold out). */
+  made_to_order?: boolean;
 }
 
 export interface InventoryProjection extends LosslessJsonObject {
@@ -201,6 +210,16 @@ function counters(value: LosslessJsonValue | undefined): value is LosslessJsonOb
   return combined <= I64_MAX && combined === value.total;
 }
 
+/** An optional `made_to_order` flag: a boolean, and when true nothing is counted as available. */
+function madeToOrderFlag(value: LosslessJsonObject): boolean {
+  if (value.made_to_order === undefined) {
+    return true;
+  }
+  return (
+    typeof value.made_to_order === "boolean" && (!value.made_to_order || value.available === 0n)
+  );
+}
+
 function decodeListingStock(value: LosslessJsonValue | undefined): ListingStockView {
   const combined =
     object(value) &&
@@ -217,7 +236,8 @@ function decodeListingStock(value: LosslessJsonValue | undefined): ListingStockV
     !int64(value.reserved, 0n) ||
     !int64(value.sold, 0n) ||
     combined > I64_MAX ||
-    combined !== value.total
+    combined !== value.total ||
+    !madeToOrderFlag(value)
   ) {
     throw new PubkyShopError("invalid_response");
   }
@@ -255,7 +275,9 @@ function decodeVariantInventory(value: LosslessJsonValue | undefined): VariantIn
     (value.sku !== undefined && typeof value.sku !== "string") ||
     typeof value.enabled !== "boolean" ||
     typeof value.sold_out !== "boolean" ||
-    !counters(value)
+    !counters(value) ||
+    !madeToOrderFlag(value) ||
+    (value.made_to_order === true && value.sold_out)
   ) {
     throw new PubkyShopError("invalid_response");
   }
