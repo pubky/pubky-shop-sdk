@@ -351,7 +351,7 @@ test("import and stock sync round trip against fixtures", async () => {
     idempotency_key: string;
     external_ref: { channel: string; external_id: string };
   }[] = [];
-  let projection: { available: number; revision: number } | undefined;
+  let projection: { available: number; revision: number; madeToOrder?: boolean } | undefined;
   let shopifyAvailable = 4;
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = String(input);
@@ -487,6 +487,7 @@ test("import and stock sync round trip against fixtures", async () => {
           reserved: 0,
           sold: 0,
           total: projection.available,
+          ...(projection.madeToOrder ? { made_to_order: true } : {}),
         },
       });
     }
@@ -612,6 +613,24 @@ test("import and stock sync round trip against fixtures", async () => {
   assert.equal(released.outcome, "applied");
   assert.equal(released.adjustDelta, "2");
   assert.equal(adjusts.length, 2);
+
+  // The shop's store connection sells this listing made to order: a stock
+  // level has no count to set, so the bridge sends nothing.
+  const savedProjection = projection;
+  projection = { available: 0, revision: (projection?.revision ?? 1) + 1, madeToOrder: true };
+  const onDemand = new TextEncoder().encode(
+    JSON.stringify({ inventory_item_id: 808950810, location_id: 905684977, available: 3 }),
+  );
+  const skipped = await applyShopifyWebhook(
+    onDemand,
+    headers(onDemand, "inventory_levels/update", "00000000-0000-4000-8000-000000000013"),
+    ctx,
+  );
+  assert.equal(skipped.outcome, "ignored");
+  assert.equal(skipped.reason, "made_to_order");
+  assert.ok(skipped.losses.some((entry) => entry.code === "made_to_order"));
+  assert.equal(adjusts.length, 2);
+  projection = savedProjection;
 
   const csv = await applyShopifyProductCsv(
     await readFile(fixture("product.csv")),

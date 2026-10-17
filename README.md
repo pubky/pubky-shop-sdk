@@ -439,7 +439,10 @@ verification. CSV quantity columns are recorded as losses. `map-csv` does
 not write them as canonical stock. The Admin API client speaks GraphQL
 `inventorySetQuantities` with compare-quantity. Tests run it against
 recorded responses. The live store, token, and webhook endpoint are
-documented in `connectors/shopify-bridge/BOUNDARY.md`.
+documented in `connectors/shopify-bridge/BOUNDARY.md`. A listing the shop's
+store connection sells made to order is left alone: a stock level for it is
+`ignored` with reason `made_to_order`, and an adjustment the service refuses
+with `stock_not_tracked` is quarantined, never retried.
 
 ```sh
 shopify-bridge map-csv --input products.csv --seller <pubky> --currency USD --exponent 2 --output canonical.csv --losses losses.json

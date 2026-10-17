@@ -146,7 +146,12 @@ async function projectionAvailable(
   aggregateId: string,
 ): Promise<
   | { readonly found: false }
-  | { readonly found: true; readonly available: bigint; readonly revision: bigint }
+  | {
+      readonly found: true;
+      readonly available: bigint;
+      readonly revision: bigint;
+      readonly madeToOrder: boolean;
+    }
 > {
   const result = await pubky.getInventoryProjection(aggregateId);
   if (!result.ok) {
@@ -162,6 +167,9 @@ async function projectionAvailable(
     found: true,
     available: result.value.stock.available,
     revision: result.value.server_revision,
+    madeToOrder:
+      result.value.stock.made_to_order === true ||
+      (result.value.variants ?? []).some((variant) => variant.made_to_order === true),
   };
 }
 
@@ -286,7 +294,7 @@ async function catalogPlan(
   const current = await projectionAvailable(ctx.pubky, aggregateId);
   const target = positive.reduce((sum, variant) => sum + variant.quantity, 0);
   let adjust: StoredAdjust | null = null;
-  if (current.found) {
+  if (current.found && !current.madeToOrder) {
     const planned = storedAdjust(
       ctx.secrets,
       externalEventId,
@@ -383,6 +391,16 @@ async function buildWebhookPlan(
       },
     ]);
   }
+  if (current.madeToOrder) {
+    return emptyResult("ignored", "made_to_order", [
+      {
+        code: "made_to_order",
+        source: "projection",
+        detail:
+          "Pubky sells this listing made to order through the shop's store connection, so a stock level has nothing to count.",
+      },
+    ]);
+  }
   const planned = storedAdjust(
     ctx.secrets,
     externalEventId,
@@ -426,7 +444,11 @@ async function sendAdjust(
     return { action: "ok" };
   }
   const code = result.error.details.serviceCode;
-  if (code === "revision_conflict" || code === "idempotency_conflict") {
+  if (
+    code === "revision_conflict" ||
+    code === "idempotency_conflict" ||
+    code === "stock_not_tracked"
+  ) {
     return { action: "quarantine", reason: code };
   }
   return { action: "retry" };

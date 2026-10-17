@@ -37,6 +37,7 @@ export const SHOPIFY_LOSS_CODES = [
   "sku_not_searchable",
   "metafield",
   "collection",
+  "made_to_order",
 ] as const;
 
 export type ShopifyLossCode = (typeof SHOPIFY_LOSS_CODES)[number];
