@@ -52,6 +52,7 @@ export const KNOWN_SERVICE_ERROR_CODES = [
   "rate_limited",
   "revision_conflict",
   "seller_ownership_required",
+  "stock_not_tracked",
   "stock_overflow",
   "variant_assertion_mismatch",
   "variant_authority_unsupported",

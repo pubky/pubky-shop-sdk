@@ -112,6 +112,15 @@ required by the service on a variant-tracked listing. Its answer carries
 listing sum in `listing_total`); a single-variant listing still answers
 `listing_total`. Narrow on `stock.authority` before reading `variant_id`.
 
+Stock the seller's connected store sells without a count (Shopify untracked,
+or kept on sale at zero: print-on-demand) is made to order on Pubky. The
+projection carries `made_to_order: true` on `stock` while the listing (or one
+of its sizes) is made to order, and on that size's `variants` row, which has
+`available` 0 (not a count) and `sold_out` false; `stock.available` still
+counts the counted sizes. The decoder refuses a made-to-order row that counts
+units or reads sold out. An `inventory.adjust` of made-to-order stock is
+refused with `stock_not_tracked`: the store connection owns that stock.
+
 | Method | Service route |
 | --- | --- |
 | `getInventoryProjection(aggregateId)` | `GET /v1/inventory/listings/{aggregateId}` |
@@ -431,7 +440,10 @@ verification. CSV quantity columns are recorded as losses. `map-csv` does
 not write them as canonical stock. The Admin API client speaks GraphQL
 `inventorySetQuantities` with compare-quantity. Tests run it against
 recorded responses. The live store, token, and webhook endpoint are
-documented in `connectors/shopify-bridge/BOUNDARY.md`.
+documented in `connectors/shopify-bridge/BOUNDARY.md`. A listing the shop's
+store connection sells made to order is left alone: a stock level for it is
+`ignored` with reason `made_to_order`, and an adjustment the service refuses
+with `stock_not_tracked` is quarantined, never retried.
 
 ```sh
 shopify-bridge map-csv --input products.csv --seller <pubky> --currency USD --exponent 2 --output canonical.csv --losses losses.json

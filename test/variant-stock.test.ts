@@ -226,3 +226,133 @@ test("spec-derived: malformed variants on the inventory read are invalid_respons
     }
   }
 });
+
+// Spec-derived from the service wire for made-to-order stock
+// (pubky-marketplace-service migration 0073): `made_to_order` appears only
+// when true, with nothing counted as available.
+
+test("spec-derived: made-to-order stock decodes on the inventory read", async () => {
+  const stock = {
+    ...LISTING_TOTAL,
+    total: 3,
+    available: 0,
+    reserved: 1,
+    sold: 2,
+    made_to_order: true,
+  };
+  const variants = [
+    {
+      variant_id: "size_m",
+      enabled: true,
+      total: 3,
+      available: 0,
+      reserved: 1,
+      sold: 2,
+      sold_out: false,
+      made_to_order: true,
+    },
+  ];
+  const result = await clientFor(projectionBody({ stock, variants })).getInventoryProjection(
+    AGGREGATE,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) {
+    return;
+  }
+  assert.equal(result.value.stock.made_to_order, true);
+  assert.equal(result.value.stock.available, 0n);
+  assert.equal(result.value.variants?.[0]?.made_to_order, true);
+  assert.equal(result.value.variants?.[0]?.sold_out, false);
+});
+
+test("spec-derived: a listing with one made-to-order size still counts its other sizes", async () => {
+  const stock = {
+    ...LISTING_TOTAL,
+    total: 4,
+    available: 3,
+    reserved: 0,
+    sold: 1,
+    made_to_order: true,
+  };
+  const variants = [
+    {
+      variant_id: "size_s",
+      enabled: true,
+      total: 3,
+      available: 3,
+      reserved: 0,
+      sold: 0,
+      sold_out: false,
+    },
+    {
+      variant_id: "size_m",
+      enabled: true,
+      total: 1,
+      available: 0,
+      reserved: 0,
+      sold: 1,
+      sold_out: false,
+      made_to_order: true,
+    },
+  ];
+  const result = await clientFor(projectionBody({ stock, variants })).getInventoryProjection(
+    AGGREGATE,
+  );
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.stock.available, 3n);
+    assert.equal(result.value.stock.made_to_order, true);
+    assert.equal(result.value.variants?.[0]?.made_to_order, undefined);
+  }
+});
+
+test("spec-derived: a made-to-order size that counts units or reads sold out is invalid_response", async () => {
+  const row = {
+    variant_id: "size_m",
+    enabled: true,
+    total: 1,
+    available: 0,
+    reserved: 0,
+    sold: 1,
+    sold_out: false,
+    made_to_order: true,
+  };
+  const bad = [
+    projectionBody({ stock: { ...LISTING_TOTAL, made_to_order: "yes" } }),
+    projectionBody({ variants: [{ ...row, sold_out: true }] }),
+    projectionBody({ variants: [{ ...row, total: 2, available: 1 }] }),
+    projectionBody({ variants: [{ ...row, made_to_order: 1 }] }),
+  ];
+  for (const body of bad) {
+    const result = await clientFor(body).getInventoryProjection(AGGREGATE);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, "invalid_response");
+    }
+  }
+});
+
+test("spec-derived: an adjustment of made-to-order stock names stock_not_tracked", async () => {
+  const client = new PubkyShopClient({
+    session: "opaque-host-bearer",
+    serviceUrl: "https://inventory.example/",
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          schema_version: 1,
+          ok: false,
+          error: {
+            code: "stock_not_tracked",
+            message: "The stock is made to order and has no count to adjust.",
+            current_revision: 7,
+          },
+        }),
+        { status: 409 },
+      ),
+  });
+  const result = await adjust(client);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.details.serviceCode, "stock_not_tracked");
+  }
+});

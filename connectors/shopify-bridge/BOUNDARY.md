@@ -45,12 +45,42 @@ before `markComplete` leaves the receipt at `effect-sent`. Resume reads
 Shopify available stock and does not call `inventorySetQuantities` again
 when that stock is already the planned quantity. A crash after the plan is
 stored replays that plan, including the same `inventory.adjust` idempotency
-key. A `revision_conflict` or `idempotency_conflict` is quarantined. The
+key. A `revision_conflict`, `idempotency_conflict` or `stock_not_tracked`
+(see [Made-to-order listings](#made-to-order-listings)) is quarantined. The
 bridge does not read stock again and invent a new delta. A `sync-many` item
 404 or 409 is quarantined before adjust or checkpoint. The homeserver record
 written before that sync is left in place: the receipt is not checkpointed
 and the catalog fingerprint is not remembered. A 408, 429, or 500 item
 result is rejected and the same receipt retries.
+
+## Made-to-order listings
+
+The marketplace service can sell a listing made to order: the shop's store
+connection (run by the service, not this bridge) found the Shopify variant
+untracked, or set to keep selling at zero, which is how print-on-demand apps
+such as Printful set variants up. The service's inventory read then carries
+`made_to_order: true` on the listing stock (or on a size), its `available` is
+0 for that stock and is not a count, and it refuses an `inventory.adjust` of
+it with `stock_not_tracked`. The store connection owns that stock, so the
+bridge does not set it:
+
+- `inventory_levels/update` for such a listing is `ignored` with reason
+  `made_to_order` and a `made_to_order` loss. Nothing is sent to the service.
+- `products/update` for such a listing still writes the homeserver record and
+  syncs it, and plans no `inventory.adjust`: the result is `applied` with an
+  empty `adjustDelta` and a `made_to_order` loss.
+- An `inventory.adjust` the service refuses with `stock_not_tracked` (the
+  listing became made to order after the bridge read its stock) is
+  quarantined with that reason, on either path, like `revision_conflict`. The
+  same receipt returns the quarantine and sends nothing again until
+  `releaseQuarantine`. It is never retried as a transient failure.
+
+The bridge publishes stock only at the configured location, so a Shopify
+product with no tracked stock there is a `no_stock_at_location` noop and is
+not published by the bridge at all. Print-on-demand products reach Pubky
+through the store connection in the Shop, which sells them made to order.
+
+## Catalog revisions
 
 Catalog PUT writes homeserver record revision 1 on the first import. A later
 delivery with the same catalog fingerprint does not PUT again. A later

@@ -351,7 +351,7 @@ test("import and stock sync round trip against fixtures", async () => {
     idempotency_key: string;
     external_ref: { channel: string; external_id: string };
   }[] = [];
-  let projection: { available: number; revision: number } | undefined;
+  let projection: { available: number; revision: number; madeToOrder?: boolean } | undefined;
   let shopifyAvailable = 4;
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = String(input);
@@ -487,6 +487,7 @@ test("import and stock sync round trip against fixtures", async () => {
           reserved: 0,
           sold: 0,
           total: projection.available,
+          ...(projection.madeToOrder ? { made_to_order: true } : {}),
         },
       });
     }
@@ -612,6 +613,24 @@ test("import and stock sync round trip against fixtures", async () => {
   assert.equal(released.outcome, "applied");
   assert.equal(released.adjustDelta, "2");
   assert.equal(adjusts.length, 2);
+
+  // The shop's store connection sells this listing made to order: a stock
+  // level has no count to set, so the bridge sends nothing.
+  const savedProjection = projection;
+  projection = { available: 0, revision: (projection?.revision ?? 1) + 1, madeToOrder: true };
+  const onDemand = new TextEncoder().encode(
+    JSON.stringify({ inventory_item_id: 808950810, location_id: 905684977, available: 3 }),
+  );
+  const skipped = await applyShopifyWebhook(
+    onDemand,
+    headers(onDemand, "inventory_levels/update", "00000000-0000-4000-8000-000000000013"),
+    ctx,
+  );
+  assert.equal(skipped.outcome, "ignored");
+  assert.equal(skipped.reason, "made_to_order");
+  assert.ok(skipped.losses.some((entry) => entry.code === "made_to_order"));
+  assert.equal(adjusts.length, 2);
+  projection = savedProjection;
 
   const csv = await applyShopifyProductCsv(
     await readFile(fixture("product.csv")),
@@ -1110,3 +1129,208 @@ function signPubky(secret: string, timestamp: string, eventId: string, raw: Uint
   ]);
   return `v1=${createHmac("sha256", key).update(input).digest("hex")}`;
 }
+
+/**
+ * A bridge against fixtures for one listing (`night-boots`, one Shopify
+ * inventory item at the configured location) whose Pubky stock the shop's
+ * store connection may own: `projection.madeToOrder` makes it made to order,
+ * and `adjustRefusal` makes the service refuse every `inventory.adjust`.
+ */
+function madeToOrderRig() {
+  const state = {
+    projection: { available: 2, revision: 3, madeToOrder: false } as
+      | { available: number; revision: number; madeToOrder: boolean }
+      | undefined,
+    adjustRefusal: null as string | null,
+    adjusts: [] as { delta: number; expected_revision: number }[],
+    puts: [] as string[],
+    syncs: 0,
+  };
+  const homeserver: HomeserverWriter = {
+    async putText(filePath) {
+      state.puts.push(filePath);
+    },
+    async putBytes(filePath) {
+      state.puts.push(filePath);
+    },
+  };
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body === undefined ? "" : String(init.body);
+    if (url.includes("myshopify.com")) {
+      const request = JSON.parse(body) as { query: string; variables: { id?: string } };
+      if (request.query.includes("inventoryLevels")) {
+        return json({
+          data: {
+            inventoryItem: {
+              id: request.variables.id,
+              inventoryLevels: {
+                pageInfo: { hasNextPage: false },
+                nodes: [
+                  {
+                    location: { id: shopifyGid("Location", LOCATION) },
+                    quantities: [{ name: "available", quantity: 4 }],
+                  },
+                ],
+              },
+            },
+          },
+        });
+      }
+      return json({ errors: [{ message: "unexpected" }] }, 500);
+    }
+    if (url.includes("cdn.shopify.com")) {
+      return new Response(PNG, { status: 200, headers: { "content-type": "image/png" } });
+    }
+    if (url.includes("/v1/listings/sync-many")) {
+      state.syncs += 1;
+      return json(
+        {
+          schema_version: 1,
+          kind: "listing.sync_many",
+          results: [
+            {
+              seller_pubky: SELLER_PUBKY,
+              listing_id: "night-boots",
+              status: 207,
+              result: { ok: true },
+            },
+          ],
+        },
+        207,
+      );
+    }
+    if (url.includes("/v1/inventory/adjust")) {
+      const parsed = JSON.parse(body) as { delta: number; expected_revision: number };
+      state.adjusts.push(parsed);
+      if (state.adjustRefusal !== null) {
+        return json(
+          {
+            schema_version: 1,
+            ok: false,
+            error: { code: state.adjustRefusal, message: "refused", current_revision: 3 },
+          },
+          409,
+        );
+      }
+      return json({ ok: false, error: { code: "internal", message: "not in this rig" } }, 500);
+    }
+    if (url.includes("/v1/inventory/listings/")) {
+      const projection = state.projection;
+      if (projection === undefined) {
+        return json({ ok: false, error: { code: "listing_not_found", message: "missing" } }, 404);
+      }
+      return json({
+        schema_version: 1,
+        kind: "inventory_projection",
+        aggregate_id: `listing:${SELLER_PUBKY}_night-boots`,
+        seller_pubky: SELLER_PUBKY,
+        listing_id: "night-boots",
+        server_revision: projection.revision,
+        stock: {
+          authority: "listing_total",
+          available: projection.available,
+          reserved: 0,
+          sold: 0,
+          total: projection.available,
+          ...(projection.madeToOrder ? { made_to_order: true } : {}),
+        },
+      });
+    }
+    return json({ ok: false, error: { code: "invalid_request", message: "no" } }, 404);
+  };
+  return { state, fetchImpl, homeserver };
+}
+
+test("products/update for a made-to-order listing writes the record and adjusts no stock", async () => {
+  const rig = madeToOrderRig();
+  rig.state.projection = { available: 0, revision: 3, madeToOrder: true };
+  const directory = await scratch();
+  const ctx = buildContext(directory, rig.fetchImpl, rig.homeserver);
+  const product = await readFile(fixture("products-update.json"));
+  const result = await applyShopifyWebhook(
+    product,
+    headers(product, "products/update", "00000000-0000-4000-8000-000000000031"),
+    ctx,
+  );
+  assert.equal(result.outcome, "applied");
+  assert.equal(result.adjustDelta, "");
+  assert.equal(result.idempotencyKey, "");
+  assert.equal(rig.state.adjusts.length, 0, "no inventory.adjust is sent");
+  assert.equal(rig.state.syncs, 1, "the record is still synced");
+  assert.ok(rig.state.puts.some((entry) => entry.endsWith("/listings/night-boots")));
+  assert.ok(result.losses.some((entry) => entry.code === "made_to_order"));
+
+  const replay = await applyShopifyWebhook(
+    product,
+    headers(product, "products/update", "00000000-0000-4000-8000-000000000031"),
+    ctx,
+  );
+  assert.equal(replay.outcome, "replayed");
+  assert.equal(rig.state.adjusts.length, 0);
+  await assertNoCanaries(directory);
+});
+
+test("an adjustment refused as stock_not_tracked is quarantined, not retried", async () => {
+  const rig = madeToOrderRig();
+  const directory = await scratch();
+  const ctx = buildContext(directory, rig.fetchImpl, rig.homeserver);
+  const product = await readFile(fixture("products-update.json"));
+
+  // The products/update path: Pubky counted 2, Shopify has 4, so the bridge
+  // plans +2; the store connection switched the listing to made to order in
+  // between, so the service refuses it.
+  rig.state.adjustRefusal = "stock_not_tracked";
+  const productId = "00000000-0000-4000-8000-000000000041";
+  const imported = await applyShopifyWebhook(
+    product,
+    headers(product, "products/update", productId),
+    ctx,
+  );
+  assert.equal(imported.outcome, "quarantined");
+  assert.equal(imported.reason, "stock_not_tracked");
+  assert.equal(rig.state.adjusts.length, 1);
+  const again = await applyShopifyWebhook(
+    product,
+    headers(product, "products/update", productId),
+    ctx,
+  );
+  assert.equal(again.outcome, "quarantined", "the same receipt stays set aside");
+  assert.equal(rig.state.adjusts.length, 1, "nothing is sent again");
+
+  // The inventory_levels/update path, for a listing the bridge imported
+  // before Pubky had its stock (so the import adjusted nothing), refused the
+  // same way once the store connection made it made to order.
+  const levelDirectory = await scratch();
+  const levelCtx = buildContext(levelDirectory, rig.fetchImpl, rig.homeserver);
+  rig.state.adjustRefusal = null;
+  rig.state.projection = undefined;
+  const seeded = await applyShopifyWebhook(
+    product,
+    headers(product, "products/update", "00000000-0000-4000-8000-000000000042"),
+    levelCtx,
+  );
+  assert.equal(seeded.outcome, "applied");
+  rig.state.projection = { available: 2, revision: 3, madeToOrder: false };
+  rig.state.adjustRefusal = "stock_not_tracked";
+  const level = new TextEncoder().encode(
+    JSON.stringify({ inventory_item_id: 808950810, location_id: Number(LOCATION), available: 7 }),
+  );
+  const levelId = "00000000-0000-4000-8000-000000000043";
+  const before = rig.state.adjusts.length;
+  const refused = await applyShopifyWebhook(
+    level,
+    headers(level, "inventory_levels/update", levelId),
+    levelCtx,
+  );
+  assert.equal(refused.outcome, "quarantined");
+  assert.equal(refused.reason, "stock_not_tracked");
+  assert.equal(rig.state.adjusts.length, before + 1);
+  const replayed = await applyShopifyWebhook(
+    level,
+    headers(level, "inventory_levels/update", levelId),
+    levelCtx,
+  );
+  assert.equal(replayed.outcome, "quarantined");
+  assert.equal(rig.state.adjusts.length, before + 1);
+});
