@@ -310,6 +310,17 @@ async function catalogPlan(
     }
     adjust = planned;
   }
+  const stockLosses: ShopifyLoss[] =
+    current.found && current.madeToOrder
+      ? [
+          {
+            code: "made_to_order",
+            source: "projection",
+            detail:
+              "Pubky sells this listing made to order through the shop's store connection, so the record is written and no stock is adjusted.",
+          },
+        ]
+      : [];
   const catalogVariants: CatalogVariantPlan[] = positive.map((variant) => ({
     variantId: variant.variantId,
     sku: variant.sku,
@@ -326,7 +337,7 @@ async function catalogPlan(
     sellerPubky: ctx.secrets.sellerPubky,
     catalogVariants,
     adjust,
-    losses: [...located.product.losses, ...images.losses].filter(
+    losses: [...located.product.losses, ...images.losses, ...stockLosses].filter(
       (entry, index, all) =>
         all.findIndex(
           (candidate) => candidate.code === entry.code && candidate.source === entry.source,
