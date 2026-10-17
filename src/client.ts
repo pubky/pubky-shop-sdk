@@ -29,10 +29,11 @@ export interface ListingStockView extends LosslessJsonObject {
   reserved: Int64;
   sold: Int64;
   /**
-   * Present and true when the stock is made to order: the seller's connected
-   * store sells it without a count. `available` is then 0 and is not a count;
-   * the listing never sells out, and `inventory.adjust` answers
-   * `stock_not_tracked`.
+   * Present and true while the listing sells made to order: the seller's
+   * connected store sells it (or, on a variant-tracked listing, one of its
+   * sizes) without a count, so the listing never sells out. `available`
+   * counts only counted stock; a made-to-order row has none. An
+   * `inventory.adjust` of made-to-order stock answers `stock_not_tracked`.
    */
   made_to_order?: boolean;
 }
@@ -61,7 +62,7 @@ export interface VariantInventory extends LosslessJsonObject {
   reserved: Int64;
   sold: Int64;
   sold_out: boolean;
-  /** Present and true when this size is made to order (never sold out). */
+  /** Present and true when this size is made to order: `available` 0, never sold out. */
   made_to_order?: boolean;
 }
 
@@ -210,13 +211,16 @@ function counters(value: LosslessJsonValue | undefined): value is LosslessJsonOb
   return combined <= I64_MAX && combined === value.total;
 }
 
-/** An optional `made_to_order` flag: a boolean, and when true nothing is counted as available. */
+/** An optional `made_to_order` flag is a boolean. */
 function madeToOrderFlag(value: LosslessJsonObject): boolean {
-  if (value.made_to_order === undefined) {
-    return true;
-  }
+  return value.made_to_order === undefined || typeof value.made_to_order === "boolean";
+}
+
+/** A made-to-order size counts nothing as available and is never sold out. */
+function madeToOrderRow(value: LosslessJsonObject): boolean {
   return (
-    typeof value.made_to_order === "boolean" && (!value.made_to_order || value.available === 0n)
+    madeToOrderFlag(value) &&
+    (value.made_to_order !== true || (value.available === 0n && value.sold_out === false))
   );
 }
 
@@ -276,8 +280,7 @@ function decodeVariantInventory(value: LosslessJsonValue | undefined): VariantIn
     typeof value.enabled !== "boolean" ||
     typeof value.sold_out !== "boolean" ||
     !counters(value) ||
-    !madeToOrderFlag(value) ||
-    (value.made_to_order === true && value.sold_out)
+    !madeToOrderRow(value)
   ) {
     throw new PubkyShopError("invalid_response");
   }

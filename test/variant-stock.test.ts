@@ -265,24 +265,63 @@ test("spec-derived: made-to-order stock decodes on the inventory read", async ()
   assert.equal(result.value.variants?.[0]?.sold_out, false);
 });
 
-test("spec-derived: made-to-order stock that counts units or reads sold out is invalid_response", async () => {
+test("spec-derived: a listing with one made-to-order size still counts its other sizes", async () => {
+  const stock = {
+    ...LISTING_TOTAL,
+    total: 4,
+    available: 3,
+    reserved: 0,
+    sold: 1,
+    made_to_order: true,
+  };
+  const variants = [
+    {
+      variant_id: "size_s",
+      enabled: true,
+      total: 3,
+      available: 3,
+      reserved: 0,
+      sold: 0,
+      sold_out: false,
+    },
+    {
+      variant_id: "size_m",
+      enabled: true,
+      total: 1,
+      available: 0,
+      reserved: 0,
+      sold: 1,
+      sold_out: false,
+      made_to_order: true,
+    },
+  ];
+  const result = await clientFor(projectionBody({ stock, variants })).getInventoryProjection(
+    AGGREGATE,
+  );
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.stock.available, 3n);
+    assert.equal(result.value.stock.made_to_order, true);
+    assert.equal(result.value.variants?.[0]?.made_to_order, undefined);
+  }
+});
+
+test("spec-derived: a made-to-order size that counts units or reads sold out is invalid_response", async () => {
+  const row = {
+    variant_id: "size_m",
+    enabled: true,
+    total: 1,
+    available: 0,
+    reserved: 0,
+    sold: 1,
+    sold_out: false,
+    made_to_order: true,
+  };
   const bad = [
-    projectionBody({ stock: { ...LISTING_TOTAL, made_to_order: true } }),
     projectionBody({ stock: { ...LISTING_TOTAL, made_to_order: "yes" } }),
-    projectionBody({
-      variants: [
-        {
-          variant_id: "size_m",
-          enabled: true,
-          total: 1,
-          available: 0,
-          reserved: 0,
-          sold: 1,
-          sold_out: true,
-          made_to_order: true,
-        },
-      ],
-    }),
+    projectionBody({ variants: [{ ...row, sold_out: true }] }),
+    projectionBody({ variants: [{ ...row, total: 2, available: 1 }] }),
+    projectionBody({ variants: [{ ...row, made_to_order: 1 }] }),
   ];
   for (const body of bad) {
     const result = await clientFor(body).getInventoryProjection(AGGREGATE);

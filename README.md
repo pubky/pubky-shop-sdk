@@ -113,12 +113,13 @@ listing sum in `listing_total`); a single-variant listing still answers
 `listing_total`. Narrow on `stock.authority` before reading `variant_id`.
 
 Stock the seller's connected store sells without a count (Shopify untracked,
-or kept on sale at zero: print-on-demand) is made to order on Pubky. Its
-projection carries `made_to_order: true` on `stock` and on that size's
-`variants` row, with `available` 0 (not a count) and `sold_out` false; the
-decoder refuses a made-to-order view that counts units. An
-`inventory.adjust` of it is refused with `stock_not_tracked`: the store
-connection owns that stock.
+or kept on sale at zero: print-on-demand) is made to order on Pubky. The
+projection carries `made_to_order: true` on `stock` while the listing (or one
+of its sizes) is made to order, and on that size's `variants` row, which has
+`available` 0 (not a count) and `sold_out` false; `stock.available` still
+counts the counted sizes. The decoder refuses a made-to-order row that counts
+units or reads sold out. An `inventory.adjust` of made-to-order stock is
+refused with `stock_not_tracked`: the store connection owns that stock.
 
 | Method | Service route |
 | --- | --- |
